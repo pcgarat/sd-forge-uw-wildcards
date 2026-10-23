@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -159,6 +160,24 @@ class EnsureLorasTests(unittest.TestCase):
             open_request=open_request,
         )
         self.assertEqual(text, TAG)
+
+
+class ShippedManifestTests(unittest.TestCase):
+    def test_every_alias_pins_the_card_version(self):
+        path = Path(__file__).resolve().parents[1] / "forge_uw_wildcards" / "manifest.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        expected = {
+            "krea2/nsfw/snofs_krea_v1_3D": (1972981, 3220691),
+            "krea2/sliders/slider-photo__Photo_Detail_Slider_for_SNOFS_Krea": (2823820, 3185533),
+            "krea2/styles/photoreal/style-photoreal__Realism_Engine_Ideogram_4_Krea_2": (2688234, 3109006),
+            "krea2/styles/photoreal/style-photoreal__Mrpopo_Photoreal_Enhanced": (2765038, 3214145),
+            "krea2/face/face-expression__Snapchat_Face_Helper": (2853869, 3223062),
+            "krea2/nsfw/acts/nsfw-act-masturbation__krea2_sex": (2801881, 3170098),
+            "krea2/nsfw/acts/nsfw-act__krea2_sex_淫模_krea2_dildo_in_pussy": (2801881, 3170017),
+        }
+        self.assertEqual(set(data), set(expected))
+        for alias, (model_id, version_id) in expected.items():
+            self.assertEqual((data[alias]["model_id"], data[alias]["version_id"]), (model_id, version_id))
 
 
 if __name__ == "__main__":
