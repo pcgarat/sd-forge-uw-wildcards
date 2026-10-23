@@ -15,7 +15,7 @@ resultado es que la gente no fija nada y cada semilla rebaraja la escena entera.
 El objetivo es que un clic enseñe lo que sorteó una semilla concreta y que fijar
 cualquiera de esos textos cueste otro clic.
 
-Éxito: elegir router, generar, pulsar **Ver sorteado**, fijar el pelo que gustó y
+Éxito: elegir router, generar, pulsar **Ver lo generado**, fijar el pelo que gustó y
 regenerar sin copiar texto.
 
 ### Fallo previo que hay que corregir
@@ -39,14 +39,16 @@ mientras el sorteo no dependa de la semilla real.
 
 ## Comportamiento
 
-1. Dentro del acordeón, un botón **Ver sorteado** y una línea de estado.
+1. Dentro del acordeón, un botón **Ver lo generado** y una línea de estado.
 2. La semilla de la vista se resuelve así:
    - si el campo Seed del tab tiene un número mayor o igual que 0, esa;
    - si vale `-1`, la de la última generación en ese tab;
    - si no hay ninguna, la línea de estado lo dice y no se rellena nada.
-3. Rellena los 17 campos con el texto que saldría para esa semilla. La línea de
-   estado nombra la semilla y, con lote mayor que uno, la imagen: `Semilla
-   3196705980 · imagen 1 de 3`.
+3. Rellena los 17 campos con el texto que salió para esa semilla. La línea de
+   estado nombra la semilla y de dónde sale, porque las dos fuentes no son lo
+   mismo: `Semilla 3196705980 · última generación · imagen 1 de 3`, o
+   `Semilla 1234 · campo Seed`. La segunda es una predicción exacta, no algo que
+   ya salió, y el texto lo dice para no prometer de más.
 4. No toca el JSON: fijar sigue siendo explícito. Cada **Fijar** conserva el
    texto que haya en su caja, que es el que acaba de aparecer.
 5. Botón **Vaciar** que deja los 17 campos en blanco.
@@ -151,7 +153,7 @@ de estrategias sobraría.
 La fila va arriba del acordeón, antes de los 17 campos:
 
 ```
-[Ver sorteado] [Vaciar]     Semilla 3196705980 · imagen 1 de 3
+[Ver lo generado] [Vaciar]     Semilla 3196705980 · imagen 1 de 3
 ```
 
 Las cajas siguen siendo editables: sirven para escribir un texto a mano y
@@ -234,12 +236,13 @@ resuelta. Se comprueba con la verificación de abajo y queda como criterio de
   distintas y su infotext nombra la semilla usada.
 - Con lote mayor que uno, cada imagen del lote lleva las cláusulas de su propia
   semilla.
-- **Ver sorteado** con una semilla concreta en el tab devuelve exactamente el
-  texto que sale al generar con esa semilla.
-- **Ver sorteado** con `-1` devuelve el texto de la última generación y lo dice.
+- **Ver lo generado** con una semilla concreta en el tab devuelve exactamente el
+  texto que sale al generar con esa semilla, y la línea de estado dice que la
+  semilla viene del campo, no de la última generación.
+- **Ver lo generado** con `-1` devuelve el texto de la última generación y lo dice.
 - Fijar un hueco tras la vista previa lo mantiene en la siguiente generación,
   con otra semilla, sin tocar los demás.
-- El JSON de cláusulas no cambia al pulsar **Ver sorteado** ni **Vaciar**.
+- El JSON de cláusulas no cambia al pulsar **Ver lo generado** ni **Vaciar**.
 - `python3 -m unittest` de los seis módulos termina en OK.
 
 ## Decisions
@@ -250,12 +253,17 @@ resuelta. Se comprueba con la verificación de abajo y queda como criterio de
   siguiente sorteo en una copia y rompe el sentido del pack.
 - El espejo de la semilla se conecta en `show()` y no en `ui()`, por el orden de
   `apply_on_before_component_callbacks`.
+- La línea de estado distingue las dos fuentes de semilla. Con el campo Seed en
+  un número, el texto es una predicción exacta, no algo que ya salió; decirlo
+  evita que la etiqueta «Ver lo generado» prometa de más.
 - Con lote mayor que uno la vista enseña la primera imagen. Enseñar 17 cajas por
   imagen multiplicaría la UI; el resto de imágenes están en el prompt guardado.
 
 ## Open Questions
 
-1. ¿La etiqueta «Ver sorteado» o «Ver lo generado»? La primera vale también
-   antes de generar; la segunda solo después.
-2. ¿Hace falta un campo de semilla propio para previsualizar sin tocar el del
-   tab? Hoy la cadena de prioridad lo evita.
+Ninguna. Decidido con el autor antes de escribir el plan:
+
+1. El botón se llama **Ver lo generado**, no «Ver sorteado»: solo promete lo que
+   ya salió, y con `-1` eso es exactamente lo que hace.
+2. No hay campo de semilla propio. La cadena de prioridad (tab → última
+   generación) cubre los dos casos sin un tercer control.
