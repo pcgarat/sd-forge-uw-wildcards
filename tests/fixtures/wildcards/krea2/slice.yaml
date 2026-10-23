@@ -1,0 +1,11 @@
+uw-krea2-nsfw:
+  router:
+    portrait-sport-pics:
+      - __uw-krea2-nsfw/template/theme-sport-volleyball-gym-lookback__
+  template:
+    theme-sport-volleyball-gym-lookback:
+      - "__uw-krea2-nsfw/leaf/theme-sport-volleyball-gym-lookback/medium__."
+  leaf:
+    theme-sport-volleyball-gym-lookback:
+      medium:
+        - A candid selfie photograph of

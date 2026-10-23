@@ -8,8 +8,10 @@ from modules.paths import models_path
 from modules.ui_components import InputAccordion
 
 from forge_uw_wildcards.api_key import resolve_civitai_api_key
-from forge_uw_wildcards.aspect import process_prompt_aspect_size
+from forge_uw_wildcards.catalog import list_selectable_tags, load_catalog, wildcard_root
 from forge_uw_wildcards.lora_fetch import ensure_prompt_loras, load_manifest, lora_directories, urllib_open
+from forge_uw_wildcards.render import render_prompts
+from forge_uw_wildcards.state import SLOT_LABELS, pin, regenerate, set_tag, skip
 
 EXT_DIR = Path(scripts.basedir())
 _MANIFEST = load_manifest(EXT_DIR / "forge_uw_wildcards" / "manifest.json")
@@ -34,13 +36,47 @@ class UWWildcards(scripts.Script):
     def show(self, is_img2img):
         return scripts.AlwaysVisible
 
+    def _wildcard_root(self):
+        return wildcard_root(getattr(shared, "data_path", None), EXT_DIR)
+
     def ui(self, is_img2img):
         with InputAccordion(False, label=self.title(), elem_id=self.elem_id("enable")) as enable:
             gr.HTML(
-                "<div>Quita un <code>[W:H]</code> final del prompt y, si faltan, "
-                "descarga las LoRA del pack en la carpeta de LoRA de Forge, "
-                "dentro de <code>UWModularWildcards</code>.</div>"
+                "<div>Elige un router o una plantilla. Al generar, el prompt queda en prosa, "
+                "sin <code>__uw-krea2-nsfw/</code> ni un <code>[W:H]</code> final. "
+                "Fijar, omitir y regenerar solo cambian el JSON de cláusulas.</div>"
             )
+            clause_state = gr.Textbox(
+                value="{}",
+                visible=False,
+                elem_id=self.elem_id("state"),
+                label="UW cláusulas",
+            )
+            tag = gr.Dropdown(
+                label="Router o plantilla",
+                choices=list_selectable_tags(self._wildcard_root()),
+                elem_id=self.elem_id("tag"),
+            )
+            refresh = gr.Button("Recargar lista", elem_id=self.elem_id("reload"))
+            refresh.click(
+                lambda: gr.update(choices=list_selectable_tags(self._wildcard_root())),
+                outputs=[tag],
+            )
+            tag.change(set_tag, inputs=[clause_state, tag], outputs=[clause_state])
+            for kind, label in SLOT_LABELS:
+                box = gr.Textbox(label=label, lines=2, elem_id=self.elem_id(kind))
+                with gr.Row():
+                    pin_button = gr.Button("Fijar")
+                    skip_button = gr.Button("Omitir")
+                    roll_button = gr.Button("Regenerar")
+                kind_state = gr.State(kind)
+                pin_button.click(pin, inputs=[clause_state, kind_state, box], outputs=[clause_state])
+                skip_button.click(skip, inputs=[clause_state, kind_state], outputs=[clause_state])
+                roll_button.click(
+                    lambda raw, slot: (regenerate(raw, slot), ""),
+                    inputs=[clause_state, kind_state],
+                    outputs=[clause_state, box],
+                )
             apply_aspect = gr.Checkbox(
                 True, label="Aplicar marcador de aspecto", elem_id=self.elem_id("aspect")
             )
@@ -56,11 +92,40 @@ class UWWildcards(scripts.Script):
             fetch = gr.Checkbox(
                 True, label="Descargar LoRA que falten", elem_id=self.elem_id("fetch")
             )
-        return [enable, apply_aspect, megapixels, default_ar, divisible, fetch]
+        self.infotext_fields = [(clause_state, "UW Wildcards")]
+        self.paste_field_names = ["UW Wildcards"]
+        return [enable, apply_aspect, megapixels, default_ar, divisible, fetch, clause_state]
 
-    def before_process(self, processing, enable, apply_aspect, megapixels, default_ar, divisible, fetch):
+    def before_process(
+        self,
+        processing,
+        enable,
+        apply_aspect,
+        megapixels,
+        default_ar,
+        divisible,
+        fetch,
+        clause_state,
+    ):
         if not enable:
             return
+        had_batch = getattr(processing, "all_prompts", None) is not None
+        prompts = list(processing.all_prompts) if had_batch else [processing.prompt or ""]
+        seeds = list(getattr(processing, "all_seeds", None) or [])
+        if len(seeds) < len(prompts):
+            base = int(getattr(processing, "seed", 0) or 0)
+            seeds = seeds + [base] * (len(prompts) - len(seeds))
+        rewritten, size = render_prompts(
+            prompts,
+            clause_state or "{}",
+            catalog=load_catalog(self._wildcard_root()),
+            seeds=seeds,
+            apply_aspect=bool(apply_aspect),
+            megapixels=float(megapixels),
+            default_aspect_ratio=default_ar or "3:4",
+            divisible_by=int(divisible),
+        )
+
         directories = lora_directories(shared.cmd_opts, models_path)
         domain = "civitai.com" if getattr(shared.opts, "civitai_sfw_only", False) else "civitai.red"
         proxy = (getattr(shared.opts, "custom_civitai_proxy", "") or "").strip()
@@ -81,30 +146,22 @@ class UWWildcards(scripts.Script):
                 on_download=on_download,
             )
 
-        processing.prompt = rewrite(processing.prompt or "")
-        if getattr(processing, "all_prompts", None):
-            processing.all_prompts = [rewrite(item) for item in processing.all_prompts]
+        rewritten = [rewrite(item) for item in rewritten]
+        processing.prompt = rewritten[0] if rewritten else ""
+        if had_batch:
+            processing.all_prompts = rewritten
         if getattr(processing, "negative_prompt", None):
             processing.negative_prompt = rewrite(processing.negative_prompt)
         if getattr(processing, "all_negative_prompts", None):
             processing.all_negative_prompts = [rewrite(item) for item in processing.all_negative_prompts]
+        if size is not None:
+            processing.width = size[0]
+            processing.height = size[1]
+        extra = getattr(processing, "extra_generation_params", None)
+        if not isinstance(extra, dict):
+            processing.extra_generation_params = {}
+        processing.extra_generation_params["UW Wildcards"] = clause_state or "{}"
         _reload_lora_networks()
-
-        if not apply_aspect:
-            return
-        step = int(divisible)
-        ratio = default_ar or "3:4"
-        cleaned, width, height, _detected = process_prompt_aspect_size(
-            processing.prompt or "", float(megapixels), ratio, step
-        )
-        processing.prompt = cleaned
-        processing.width = int(width)
-        processing.height = int(height)
-        if getattr(processing, "all_prompts", None):
-            processing.all_prompts = [
-                process_prompt_aspect_size(item, float(megapixels), ratio, step)[0]
-                for item in processing.all_prompts
-            ]
 
 
 def on_ui_settings():

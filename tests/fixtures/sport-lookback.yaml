@@ -1,0 +1,17 @@
+# Recorte de krea2-nsfw-theme-templates.yaml.
+# Router portrait-sport-pics, plantilla theme-sport-volleyball-gym-lookback
+# y dos hojas. Cada hoja es la primera línea de su pool real
+# (shot/selfie y treatment/natural). Sin el resto del corpus.
+uw-krea2-nsfw:
+  router:
+    portrait-sport-pics:
+      - __uw-krea2-nsfw/template/theme-sport-volleyball-gym-lookback__
+  template:
+    theme-sport-volleyball-gym-lookback:
+      - "__uw-krea2-nsfw/leaf/theme-sport-volleyball-gym-lookback/medium__ __uw-krea2-nsfw/leaf/theme-sport-volleyball-gym-lookback/treatment__."
+  leaf:
+    theme-sport-volleyball-gym-lookback:
+      medium:
+        - A candid selfie photograph of
+      treatment:
+        - subtle film grain, low dynamic range, candid snapshot finish

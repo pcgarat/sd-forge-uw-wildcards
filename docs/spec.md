@@ -179,21 +179,24 @@ Slice B (además):
 ## Decisions
 
 - Acordeón AlwaysVisible en txt2img e img2img, `sorting_priority` por debajo de Dynamic Prompts. `metadata.ini`: `Before = sd-dynamic-prompts`.
+- La semilla de cada hueco es `sha256(semilla, id, contador)`, no el generador de numpy de Impact. Regenerar un hueco no arrastra a los demás. Con varias líneas en el pool, el texto no reproduce el de Comfy para la misma semilla.
+- `{a|b}` y el prefijo `N::` se resuelven. `count$$` no aparece en el corpus y no se implementa.
+- Si el prompt no contiene el tag elegido, se añade al final. Un `[W:H]` que ya estuviera al final del prompt del usuario se aparta para no quedar en medio; si la plantilla trae el suyo, ese manda el tamaño.
 - Hook de generación: `before_process`. El batch comparte un solo ancho y alto; si hiciera falta variación de texto por imagen, será `before_process_batch` en el slice B, sin cambiar la longitud de `prompts` ni de `seeds`.
 - Estado de cláusulas (slice B): un JSON, no 17 argumentos Gradio. Así un hueco nuevo no desplaza el infotext.
 - Presupuesto de megapíxeles bajo por defecto (1.0). En esta máquina el VAE es el límite, no el tiempo de muestreo.
 - Dominio y proxy se leen de las opciones que ya usa el browser: `civitai_sfw_only` elige `civitai.com` o `civitai.red`; `custom_civitai_proxy` se reenvía. No se importa `scripts.civitai_api`.
-- Manifiesto inicial, ids comprobados en ficha. El resto queda con `version_id: null` hasta leer la ficha, y mientras tanto no se descarga:
+- Manifiesto con la versión que nombra la tabla del pack, no la última del modelo. La descarga pide `/api/download/models/{version_id}` y Civitai devuelve el fichero primario de esa versión:
 
 | Alias del tag | Modelo | Versión pinada |
 |---------------|--------|----------------|
-| `krea2/nsfw/snofs_krea_v1_3D` | 1972981 | 3220691 (v1.3D) |
-| `krea2/sliders/slider-photo__Photo_Detail_Slider_for_SNOFS_Krea` | 2823820 | 3185533 (v1.0) |
-| `krea2/styles/photoreal/style-photoreal__Realism_Engine_Ideogram_4_Krea_2` | — | null (el pack pide v3.0; no usar la v2) |
-| `krea2/styles/photoreal/style-photoreal__Mrpopo_Photoreal_Enhanced` | — | null |
-| `krea2/face/face-expression__Snapchat_Face_Helper` | — | null |
-| `krea2/nsfw/acts/nsfw-act-masturbation__krea2_sex` | — | null |
-| `krea2/nsfw/acts/nsfw-act__krea2_sex_淫模_krea2_dildo_in_pussy` | — | null |
+| `krea2/nsfw/snofs_krea_v1_3D` | [1972981](https://civitai.red/models/1972981) | 3220691 (v1.3D) |
+| `krea2/sliders/slider-photo__Photo_Detail_Slider_for_SNOFS_Krea` | [2823820](https://civitai.red/models/2823820) | 3185533 (v1.0) |
+| `krea2/styles/photoreal/style-photoreal__Realism_Engine_Ideogram_4_Krea_2` | [2688234](https://civitai.red/models/2688234) | 3109006 (Krea2 v3.0; el fichero se llama v3.1) |
+| `krea2/styles/photoreal/style-photoreal__Mrpopo_Photoreal_Enhanced` | [2765038](https://civitai.red/models/2765038) | 3214145 (Mrpopo photoreal ultimate; fichero primario `krea stable non merge version.safetensors`) |
+| `krea2/face/face-expression__Snapchat_Face_Helper` | [2853869](https://civitai.red/models/2853869) | 3223062 (v1.0) |
+| `krea2/nsfw/acts/nsfw-act-masturbation__krea2_sex` | [2801881](https://civitai.red/models/2801881) | 3170098 (mast) |
+| `krea2/nsfw/acts/nsfw-act__krea2_sex_淫模_krea2_dildo_in_pussy` | [2801881](https://civitai.red/models/2801881) | 3170017 (ldo) |
 
 SNOFS v1.3D se publica como LoKR. El slice A solo garantiza que el fichero queda en la ruta. Si el loader de Forge lo rechaza, el log lo dice y no se marca como aplicado. Comprobarlo es manual, con el WebUI.
 
