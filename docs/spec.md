@@ -47,6 +47,9 @@ El éxito de la v3 del pack es ese ciclo, no “un wildcard aleatorio”.
    zip (17 huecos, pin / skip / regenerar, limpieza de puntuación, semilla por
    hueco). No empieza hasta tener ese código. Inventar el YAML sería otra
    extensión.
+3. **Slice C — inspector de huecos.** [spec-clause-inspector.md](spec-clause-inspector.md).
+   Enseñar lo que sorteó cada hueco y corregir antes la semilla sin resolver,
+   que hoy congela el sorteo con semilla aleatoria.
 
 ## Tech Stack
 
@@ -92,8 +95,9 @@ forge/extensions/sd-forge-uw-wildcards/
   .no-seed
 ```
 
-El slice B añadirá `forge_uw_wildcards/clauses.py` y `tests/test_clauses.py`.
-Los YAML del usuario viven en el volumen de datos (`wildcards/`), no aquí.
+El slice B añadió `forge_uw_wildcards/clauses.py`, `catalog.py`, `render.py` y
+`state.py`, cada uno con su test. Los YAML del usuario viven en el volumen de
+datos (`wildcards/`), no aquí.
 
 `.no-seed` hace que la semilla de docker-neo ignore la carpeta. La
 instalación de quien usa Forge es Install from URL.
