@@ -32,6 +32,17 @@ class CatalogTests(unittest.TestCase):
 
         self.assertEqual(list_selectable_tags(FIXTURE / "no-such"), [])
 
+    def test_a_broken_yaml_is_skipped(self):
+        from forge_uw_wildcards.catalog import load_catalog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.yaml").write_text(":\n  - [", encoding="utf-8")
+            (root / "ok.yaml").write_text("uw-demo/leaf/medium:\n  - hello\n", encoding="utf-8")
+            with self.assertLogs("forge_uw_wildcards.catalog", level="WARNING"):
+                catalog = load_catalog(root)
+            self.assertEqual(catalog, {"uw-demo/leaf/medium": ["hello"]})
+
 
 class StateTests(unittest.TestCase):
     def test_pin_skip_and_regenerate_only_touch_that_slot(self):
@@ -66,6 +77,27 @@ class StateTests(unittest.TestCase):
         self.assertNotIn("lighting", rolled["overrides"])
         self.assertEqual(rolled["overrides"]["hair"], "braid")
         self.assertEqual(rolled["counters"]["lighting"], 1)
+
+    def test_bad_json_fields_are_dropped_and_lora_tags_leave_overrides(self):
+        from forge_uw_wildcards.clauses import OVERRIDE_KIND_ORDER, OVERRIDE_PARAM_TO_KIND, SLOT_LABELS
+        from forge_uw_wildcards.state import parse_state
+
+        raw = json.dumps(
+            {
+                "tag": 12,
+                "overrides": {
+                    "jewelry": "<lora:krea2/nsfw/snofs_krea_v1_3D:0.6> gold hoops",
+                    "age": 4,
+                },
+                "counters": {"lighting": "no", "hair": "2", "nope": True},
+            }
+        )
+        state = parse_state(raw)
+        self.assertEqual(state["tag"], "")
+        self.assertEqual(state["overrides"], {"jewelry": "gold hoops"})
+        self.assertEqual(state["counters"], {"hair": 2})
+        self.assertEqual(tuple(kind for kind, _label in SLOT_LABELS), OVERRIDE_KIND_ORDER)
+        self.assertEqual(set(OVERRIDE_PARAM_TO_KIND), {f"{kind}_override" for kind in OVERRIDE_KIND_ORDER})
 
 
 class RenderTests(unittest.TestCase):
@@ -144,6 +176,43 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(len(prompts), 2)
         self.assertTrue(all("an illustration of" in item for item in prompts))
         self.assertTrue(all("__" not in item for item in prompts))
+
+    def test_pasting_the_template_does_not_expand_a_second_scene(self):
+        from forge_uw_wildcards.render import restore_pasted_prompt, render_prompts
+
+        catalog = {"uw-demo/leaf/medium": ["a candid portrait"]}
+        state = json.dumps({"tag": "__uw-demo/leaf/medium__", "overrides": {}, "counters": {}})
+        kwargs = dict(
+            catalog=catalog,
+            seeds=[7],
+            apply_aspect=False,
+            megapixels=1.0,
+            default_aspect_ratio="3:4",
+            divisible_by=16,
+        )
+        once, _size = render_prompts(["keep this"], state, **kwargs)
+        parameters = {"Prompt": once[0], "UW Template": "keep this"}
+        restore_pasted_prompt(parameters)
+        again, _size = render_prompts([parameters["Prompt"]], state, **kwargs)
+        self.assertEqual(again, once)
+        self.assertEqual(again[0].count("candid portrait"), 1)
+
+    def test_img2img_without_a_marker_does_not_invent_a_size(self):
+        from forge_uw_wildcards.render import render_prompts
+
+        prompts, size = render_prompts(
+            ["a portrait"],
+            "{}",
+            catalog={},
+            seeds=[1],
+            apply_aspect=True,
+            megapixels=1.0,
+            default_aspect_ratio="3:4",
+            divisible_by=16,
+            default_when_unmarked=False,
+        )
+        self.assertEqual(prompts, ["a portrait"])
+        self.assertIsNone(size)
 
 
 if __name__ == "__main__":

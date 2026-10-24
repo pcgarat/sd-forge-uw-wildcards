@@ -141,7 +141,7 @@ sustituyen al generar:
 
 - Si el prompt o la plantilla acaban en `[W:H]`, esa relación manda. El marcador
   sale del prompt.
-- Si no hay marcador, se usa **Relación si no hay marcador** (`3:4` por defecto).
+- Si no hay marcador, en txt2img se usa **Relación si no hay marcador** (`3:4` por defecto). En img2img, sin marcador, se deja el tamaño de la imagen inicial.
 - **Megapíxeles** es el presupuesto total (`1.0` por defecto) y **Múltiplo de
   ancho y alto** redondea el resultado (`16` por defecto).
 
@@ -199,10 +199,13 @@ como está y no dispara ninguna búsqueda por nombre.
 
 ## Qué se guarda en la imagen
 
-El PNG/JPEG guarda el prompt ya expandido y, en los parámetros, el JSON bajo la
-clave `UW Wildcards`. Al pegar ese infotext o usar **Send to txt2img** se
-restauran el router, las correcciones y los contadores. El campo oculto se llama
-**UW cláusulas** para no chocar con el nombre del acordeón.
+El PNG/JPEG guarda el prompt ya expandido y, en los parámetros, el JSON bajo
+`UW Wildcards` y el prompt previo a la expansión bajo `UW Template`. Al pegar
+ese infotext o usar **Send to txt2img**, el cuadro de prompt vuelve a la
+plantilla (si se dejara la prosa, el router se añadiría otra vez y saldría una
+segunda escena) y se restauran el router, las correcciones y los contadores.
+El campo oculto se llama **UW cláusulas** para no chocar con el nombre del
+acordeón.
 
 ## Ajustes
 
@@ -222,7 +225,7 @@ No forma parte de la semilla de docker-neo (`.no-seed`).
 ## Probar
 
 ```sh
-python3 -m unittest tests.test_api_key tests.test_aspect tests.test_lora_fetch tests.test_clauses tests.test_catalog -v
+python3 -m unittest tests.test_api_key tests.test_aspect tests.test_lora_fetch tests.test_clauses tests.test_catalog tests.test_script_hooks -v
 ```
 
 El corpus YAML del pack no se versiona: los tests usan un fixture mínimo en
@@ -234,8 +237,9 @@ El corpus YAML del pack no se versiona: los tests usan un fixture mínimo en
   extensión no los descarga.
 - Los campos de los 17 huecos no se rellenan con lo sorteado: para fijar un
   texto hay que copiarlo del prompt generado.
-- El tamaño del tab se sobrescribe cuando el aspecto está activo, también en
-  img2img.
+- En txt2img, con el aspecto activo y sin `[W:H]`, el tamaño pasa a ser la
+  relación por defecto. En img2img, sin marcador, se respeta el tamaño de la
+  imagen inicial.
 - Con la misma semilla, el texto no reproduce el de Comfy cuando un pool tiene
   varias líneas.
 - SNOFS v1.3D se publica como LoKR. La extensión garantiza que el fichero llega
