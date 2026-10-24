@@ -419,6 +419,63 @@ class SyntaxTests(unittest.TestCase):
         self.assertEqual(base.split(", ", 1)[1], rerolled.split(", ", 1)[1])
         self.assertNotEqual(base.split(", ", 1)[0], rerolled.split(", ", 1)[0])
 
+    def test_pin_and_skip_do_not_rewrite_a_non_uw_tag(self):
+        from forge_uw_wildcards.clauses import SKIP_OVERRIDE_SENTINEL, expand_with_overrides
+
+        catalog = {
+            "clothes/accessories/hat": ["beanie"],
+            "uw-shared/common/accessories/grp": ["silver hoop"],
+        }
+        prompt = "__clothes/accessories/hat__ __uw-shared/common/accessories/grp__"
+        pinned = expand_with_overrides(
+            prompt, 1, catalog=catalog, jewelry_override="gold hoops"
+        )
+        self.assertIn("__clothes/accessories/hat__", pinned)
+        self.assertIn("gold hoops", pinned)
+        self.assertNotIn("beanie", pinned)
+        self.assertNotIn("silver hoop", pinned)
+
+        skipped = expand_with_overrides(
+            prompt, 1, catalog=catalog, jewelry_override=SKIP_OVERRIDE_SENTINEL
+        )
+        self.assertIn("__clothes/accessories/hat__", skipped)
+        self.assertNotIn("silver hoop", skipped)
+        self.assertNotIn("beanie", skipped)
+
+    def test_dynamic_prompt_braces_in_the_user_prompt_stay(self):
+        from forge_uw_wildcards.clauses import expand_with_overrides
+
+        raw = "x {2$$red|blue|green} y"
+        self.assertEqual(expand_with_overrides(raw, 1, catalog={}), raw)
+        catalog = {"uw-krea2-nsfw/leaf/demo/medium": ["plain"]}
+        text = expand_with_overrides(
+            f"{raw} __uw-krea2-nsfw/leaf/demo/medium__", 1, catalog=catalog
+        )
+        self.assertIn("{2$$red|blue|green}", text)
+        self.assertIn("plain", text)
+        self.assertNotIn("__", text)
+
+    def test_an_empty_pool_expands_to_nothing(self):
+        from forge_uw_wildcards.clauses import expand_with_overrides
+
+        text = expand_with_overrides(
+            "before __uw-demo/leaf/medium__ after",
+            1,
+            catalog={"uw-demo/leaf/medium": []},
+        )
+        self.assertEqual(text, "before after")
+        self.assertNotIn("__", text)
+
+    def test_a_bad_counter_does_not_raise(self):
+        from forge_uw_wildcards.clauses import expand_with_overrides
+
+        catalog = {"uw-demo/leaf/medium": ["ONE", "TWO"]}
+        tag = "__uw-demo/leaf/medium__"
+        self.assertEqual(
+            expand_with_overrides(tag, 3, catalog=catalog, counters={"medium": "nope"}),
+            expand_with_overrides(tag, 3, catalog=catalog, counters={"medium": 0}),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

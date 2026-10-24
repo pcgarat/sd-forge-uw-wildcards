@@ -2,25 +2,28 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import yaml
 
+logger = logging.getLogger(__name__)
+
 _SELECTABLE = {"router", "template"}
 
 
-def _normalize(key: str) -> str:
+def normalize_key(key: str) -> str:
     return key.replace("\\", "/").replace(" ", "-").lower()
 
 
 def _flatten(key: str, value, into: dict) -> None:
     if isinstance(value, list):
-        into[_normalize(key)] = [str(item) for item in value]
+        into[normalize_key(key)] = [str(item) for item in value]
     elif isinstance(value, dict):
         for child, inner in value.items():
             _flatten(f"{key}/{child}", inner, into)
     elif isinstance(value, str):
-        into[_normalize(key)] = [value]
+        into[normalize_key(key)] = [value]
 
 
 def _yaml_files(root: Path):
@@ -39,7 +42,11 @@ def _yaml_files(root: Path):
 def load_catalog(root: Path) -> dict:
     catalog: dict = {}
     for path in _yaml_files(Path(root)):
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError:
+            logger.warning("UW Wildcards: se omite el YAML mal formado %s", path)
+            continue
         if not isinstance(data, dict):
             continue
         for key, value in data.items():

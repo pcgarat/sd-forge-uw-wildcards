@@ -6,10 +6,14 @@ y el tag del prompt se reescribe para que apunte ahí.
 
 from __future__ import annotations
 
+import http.client
+import inspect
 import json
 import os
 import re
+import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,6 +26,9 @@ _PAGE_HOSTS = ("civitai.com", "civitai.red")
 _PAGE_PATHS = ("/login", "/models/", "/model-versions/", "/purchase", "/checkout", "/buzz", "/user/")
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
+_IDLE_TIMEOUT = 120
+_TRANSFER_TIMEOUT = 30 * 60
+_READ_SIZE = 256 * 1024
 
 
 class LoraFetchError(RuntimeError):
@@ -29,10 +36,11 @@ class LoraFetchError(RuntimeError):
 
 
 class HttpResult:
-    def __init__(self, status: int, headers: dict, body: bytes):
+    def __init__(self, status: int, headers: dict, body: bytes, stored: bool = False):
         self.status = status
         self.headers = {str(key).lower(): value for key, value in headers.items()}
         self.body = body
+        self.stored = stored
 
 
 def lora_directories(cmd_opts, models_path: str | os.PathLike) -> list[Path]:
@@ -60,7 +68,45 @@ def load_manifest(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def urllib_open(url: str, headers: dict, proxy: str, timeout: int = 120) -> HttpResult:
+def _content_length(headers: dict) -> int | None:
+    raw = headers.get("Content-Length") or headers.get("content-length")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_bounded(response, deadline: float) -> bytes:
+    chunks = []
+    while True:
+        if time.monotonic() > deadline:
+            raise TimeoutError("transfer")
+        chunk = response.read(_READ_SIZE)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _stream_to(response, dest: Path, deadline: float, first: bytes, expected: int | None) -> None:
+    total = 0
+    with dest.open("wb") as handle:
+        if first:
+            handle.write(first)
+            total += len(first)
+        while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError("transfer")
+            chunk = response.read(_READ_SIZE)
+            if not chunk:
+                break
+            handle.write(chunk)
+            total += len(chunk)
+    if expected is not None and total != expected:
+        raise http.client.IncompleteRead(b"", expected)
+
+
+def urllib_open(url: str, headers: dict, proxy: str, timeout: int = _IDLE_TIMEOUT, dest: Path | None = None) -> HttpResult:
     class _NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, hdrs, newurl):
             return None
@@ -71,19 +117,50 @@ def urllib_open(url: str, headers: dict, proxy: str, timeout: int = 120) -> Http
     handlers.append(_NoRedirect())
     opener = urllib.request.build_opener(*handlers)
     request = urllib.request.Request(url, headers=headers, method="GET")
+    deadline = time.monotonic() + _TRANSFER_TIMEOUT
     try:
         with opener.open(request, timeout=timeout) as response:
-            return HttpResult(getattr(response, "status", 200), dict(response.headers), response.read())
+            status = getattr(response, "status", 200)
+            response_headers = dict(response.headers)
+            content_type = str(response_headers.get("Content-Type") or response_headers.get("content-type") or "")
+            if dest is not None and status == 200 and "text/html" not in content_type.lower():
+                first = response.read(1)
+                if first in (b"", b"<"):
+                    rest = _read_bounded(response, deadline) if first else b""
+                    return HttpResult(status, response_headers, first + rest)
+                _stream_to(response, dest, deadline, first, _content_length(response_headers))
+                return HttpResult(status, response_headers, b"", stored=True)
+            return HttpResult(status, response_headers, _read_bounded(response, deadline))
     except urllib.error.HTTPError as exc:
         body = exc.read() if exc.fp else b""
         return HttpResult(exc.code, dict(exc.headers or {}), body)
 
 
+def _host(url: str) -> str:
+    return urllib.parse.urlparse(url).netloc.lower().split(":")[0]
+
+
+def _same_civitai_origin(url: str, domain: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return False
+    host = _host(url)
+    domain = (domain or "").lower()
+    return host == domain or host.endswith("." + domain)
+
+
+def _request_headers(url: str, api_key: str, domain: str) -> dict:
+    headers = {"User-Agent": "sd-forge-uw-wildcards"}
+    if _same_civitai_origin(url, domain):
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
 def classify_location(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    if parsed.scheme != "https" or not parsed.netloc:
         return "invalid"
-    host = parsed.netloc.lower().split(":")[0]
+    host = _host(url)
     if not any(host == item or host.endswith("." + item) for item in _PAGE_HOSTS):
         return "file"
     path = (parsed.path or "/").lower()
@@ -129,6 +206,22 @@ def _format_tag(name: str, weight: str, clip: str | None) -> str:
     return f"<lora:{name}:{weight}>"
 
 
+def _accepts_dest(open_request) -> bool:
+    try:
+        return "dest" in inspect.signature(open_request).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _network_reason(exc: BaseException) -> str:
+    reason = getattr(exc, "reason", None)
+    if isinstance(exc, (TimeoutError, socket.timeout)) or isinstance(reason, (TimeoutError, socket.timeout)):
+        return "la descarga ha superado el tiempo de espera"
+    if isinstance(exc, http.client.IncompleteRead):
+        return "la descarga se ha cortado"
+    return "no se ha podido conectar con Civitai"
+
+
 def _fail(alias: str, reason: str, domain: str) -> None:
     sfw = ""
     if domain == "civitai.com":
@@ -140,13 +233,20 @@ def _download(alias: str, version_id: int, dest: Path, api_key: str, domain: str
     partial = dest.with_suffix(dest.suffix + ".partial")
     dest.parent.mkdir(parents=True, exist_ok=True)
     url = f"https://{domain}/api/download/models/{version_id}"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": "sd-forge-uw-wildcards",
-    }
+    deadline = time.monotonic() + _TRANSFER_TIMEOUT
     try:
         for _ in range(5):
-            result = open_request(url, headers, proxy)
+            if time.monotonic() > deadline:
+                _fail(alias, "la descarga ha superado el tiempo de espera", domain)
+            try:
+                if _accepts_dest(open_request):
+                    result = open_request(url, _request_headers(url, api_key, domain), proxy, dest=partial)
+                else:
+                    result = open_request(url, _request_headers(url, api_key, domain), proxy)
+            except LoraFetchError:
+                raise
+            except Exception as exc:
+                _fail(alias, _network_reason(exc), domain)
             if result.status == 401:
                 _fail(alias, "Civitai pide una clave de API válida", domain)
             if 300 <= result.status < 400:
@@ -155,6 +255,8 @@ def _download(alias: str, version_id: int, dest: Path, api_key: str, domain: str
                     _fail(alias, f"redirect {result.status} sin destino", domain)
                 url = urllib.parse.urljoin(url, location)
                 kind = classify_location(url)
+                if kind == "invalid":
+                    _fail(alias, "el destino de la descarga no es https", domain)
                 if kind == "no_api":
                     _fail(alias, "Civitai pide una clave de API válida", domain)
                 if kind != "file":
@@ -163,11 +265,15 @@ def _download(alias: str, version_id: int, dest: Path, api_key: str, domain: str
             if result.status != 200:
                 _fail(alias, f"Civitai ha respondido {result.status}", domain)
             content_type = (result.headers.get("content-type") or "").lower()
-            if "text/html" in content_type or result.body.lstrip()[:1] == b"<":
-                _fail(alias, "Civitai ha devuelto una página en lugar del fichero", domain)
-            if not result.body:
-                _fail(alias, "Civitai ha devuelto un fichero vacío", domain)
-            partial.write_bytes(result.body)
+            if getattr(result, "stored", False):
+                if not partial.is_file() or partial.stat().st_size == 0:
+                    _fail(alias, "Civitai ha devuelto un fichero vacío", domain)
+            else:
+                if "text/html" in content_type or result.body.lstrip()[:1] == b"<":
+                    _fail(alias, "Civitai ha devuelto una página en lugar del fichero", domain)
+                if not result.body:
+                    _fail(alias, "Civitai ha devuelto un fichero vacío", domain)
+                partial.write_bytes(result.body)
             os.replace(partial, dest)
             return
         _fail(alias, "demasiados redirects", domain)

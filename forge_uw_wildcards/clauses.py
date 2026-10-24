@@ -11,6 +11,8 @@ import hashlib
 import random
 import re
 
+from forge_uw_wildcards.catalog import normalize_key
+
 _TAG_RE = re.compile(r"__([\w.\-+/*\\]+?)__")
 _BRACE_RE = re.compile(r"(?<!\\)\{((?:[^{}]|(?<=\\)[{}])*?)(?<!\\)\}")
 _WEIGHT_RE = re.compile(r"^\s*(-?(?:\d+\.?\d*|\d*\.\d+))::(.*)$", re.DOTALL)
@@ -32,49 +34,49 @@ LEAF_OVERRIDE_KINDS = (
     "treatment",
 )
 
-OVERRIDE_PARAM_TO_KIND = {
-    "wardrobe_override": "wardrobe",
-    "environment_override": "environment",
-    "medium_override": "medium",
-    "lighting_override": "lighting",
-    "treatment_override": "treatment",
-    "hair_override": "hair",
-    "body_override": "body",
-    "age_override": "age",
-    "eye_color_override": "eye_color",
-    "nationality_override": "nationality",
-    "skin_override": "skin",
-    "face_override": "face",
-    "jewelry_override": "jewelry",
-    "skin_tone_override": "skin_tone",
-    "hair_color_override": "hair_color",
-    "breast_size_override": "breast_size",
-    "butt_size_override": "butt_size",
+# Una sola tabla: la etiqueta de la UI, el orden de overrides y el nombre del parámetro.
+SLOT_LABELS = (
+    ("wardrobe", "Ropa"),
+    ("environment", "Entorno"),
+    ("medium", "Medio"),
+    ("lighting", "Luz"),
+    ("treatment", "Tratamiento"),
+    ("hair", "Pelo"),
+    ("body", "Cuerpo"),
+    ("age", "Edad"),
+    ("eye_color", "Color de ojos"),
+    ("nationality", "Nacionalidad"),
+    ("skin", "Piel"),
+    ("face", "Rostro"),
+    ("jewelry", "Joyas"),
+    ("skin_tone", "Tono de piel"),
+    ("hair_color", "Color de pelo"),
+    ("breast_size", "Pecho"),
+    ("butt_size", "Cadera"),
+)
+
+# contains, exclude.
+_ATOM_RULES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "hair": (("/common/hair/",), ("/hair-color/",)),
+    "body": (("/body-archetype/",), ()),
+    "age": (("/common/age/",), ()),
+    "eye_color": (("/eye-color/",), ()),
+    "nationality": (("/nationality/",), ()),
+    "skin": (("/common/skin/",), ("/skin-tone/",)),
+    "face": (("/face-features/",), ()),
+    "jewelry": (("/piercing/", "/accessories/"), ()),
+    "skin_tone": (("/skin-tone/",), ()),
+    "hair_color": (("/hair-color/",), ()),
+    "breast_size": (("/breast-size/",), ()),
+    "butt_size": (("/butt-size/",), ()),
 }
 
-OVERRIDE_KIND_ORDER = (
-    "wardrobe",
-    "environment",
-    "medium",
-    "lighting",
-    "treatment",
-    "hair",
-    "body",
-    "age",
-    "eye_color",
-    "nationality",
-    "skin",
-    "face",
-    "jewelry",
-    "skin_tone",
-    "hair_color",
-    "breast_size",
-    "butt_size",
-)
+OVERRIDE_KIND_ORDER = tuple(kind for kind, _label in SLOT_LABELS)
+OVERRIDE_PARAM_TO_KIND = {f"{kind}_override": kind for kind, _label in SLOT_LABELS}
 
 
 def _normalize_key(key: str) -> str:
-    return key.replace("\\", "/").replace(" ", "-").lower()
+    return normalize_key(key)
 
 
 def _is_leaf_override_key(key: str, kind: str) -> bool:
@@ -84,31 +86,11 @@ def _is_leaf_override_key(key: str, kind: str) -> bool:
 
 
 def _is_atom_override_key(key: str, kind: str) -> bool:
-    if kind == "hair":
-        return "/common/hair/" in key and "/hair-color/" not in key
-    if kind == "body":
-        return "/body-archetype/" in key
-    if kind == "age":
-        return "/common/age/" in key
-    if kind == "eye_color":
-        return "/eye-color/" in key
-    if kind == "nationality":
-        return "/nationality/" in key
-    if kind == "skin":
-        return "/common/skin/" in key and "/skin-tone/" not in key
-    if kind == "face":
-        return "/face-features/" in key
-    if kind == "jewelry":
-        return "/piercing/" in key or "/accessories/" in key
-    if kind == "skin_tone":
-        return "/skin-tone/" in key
-    if kind == "hair_color":
-        return "/hair-color/" in key
-    if kind == "breast_size":
-        return "/breast-size/" in key
-    if kind == "butt_size":
-        return "/butt-size/" in key
-    return False
+    rule = _ATOM_RULES.get(kind)
+    if rule is None:
+        return False
+    contains, exclude = rule
+    return any(part in key for part in contains) and not any(part in key for part in exclude)
 
 
 def _is_override_key(key: str, kind: str) -> bool:
@@ -133,14 +115,14 @@ def _classify_overrides(overrides: dict[str, str]) -> tuple[dict[str, str], set[
 
 def _lookup(key: str, catalog: dict, active: dict[str, str], skipped: set[str]):
     normalized = _normalize_key(key)
+    if not normalized.startswith("uw-"):
+        return None
     for kind in OVERRIDE_KIND_ORDER:
         if kind in skipped and _is_override_key(normalized, kind):
             return [""]
         value = active.get(kind)
         if value and _is_override_key(normalized, kind):
             return [value]
-    if not normalized.startswith("uw-"):
-        return None
     return catalog.get(normalized)
 
 
@@ -212,7 +194,18 @@ def _draw(seed: int | None, slot: str, counter: int) -> int:
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
 
 
+def _counter_value(counters: dict | None, slot: str) -> int:
+    if not isinstance(counters, dict):
+        return 0
+    try:
+        return int(counters.get(slot, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _weighted_choice(parsed: list[tuple[float, str]], rng: random.Random) -> str:
+    if not parsed:
+        return ""
     total = sum(weight for weight, _body in parsed)
     if total <= 0:
         return parsed[-1][1]
@@ -261,14 +254,19 @@ def _pick(
     counters: dict | None,
     trace: dict | None = None,
 ) -> str:
+    if not options:
+        return ""
     parsed = [_parse_weighted(str(item)) for item in options]
+    if not parsed:
+        return ""
     if len(parsed) == 1:
         chosen = parsed[0][1]
     else:
         slot = _slot_id(key)
-        counter = int((counters or {}).get(slot, 0))
+        counter = _counter_value(counters, slot)
         rng = random.Random(_draw(seed, slot, counter))
         chosen = _weighted_choice(parsed, rng)
+    chosen, _replaced = _resolve_braces(chosen, seed)
     if trace is not None and chosen:
         slot = _slot_id(key)
         if slot in OVERRIDE_KIND_ORDER:
@@ -302,12 +300,11 @@ def _expand(
     overrides: dict[str, str],
 ) -> str:
     active, skipped = _classify_overrides(overrides)
-    if not active and not skipped and "__" not in source and "{" not in source:
+    if not active and not skipped and "__" not in source:
         return source
 
     current = source
     for _ in range(100):
-        current, braces_replaced = _resolve_braces(current, seed)
         pieces: list[str] = []
         pos = 0
         replaced = False
@@ -322,6 +319,6 @@ def _expand(
             pos = match.end()
         pieces.append(current[pos:])
         current = "".join(pieces)
-        if not braces_replaced and not replaced:
+        if not replaced:
             break
     return current

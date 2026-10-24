@@ -1,11 +1,15 @@
+import http.client
 import json
+import time
 import unittest
+import urllib.error
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from forge_uw_wildcards.lora_fetch import (
     HttpResult,
     LoraFetchError,
+    _stream_to,
     ensure_prompt_loras,
     lora_directories,
 )
@@ -145,6 +149,104 @@ class EnsureLorasTests(unittest.TestCase):
             self.assertIn("SFW only", message)
             self.assertEqual(list(root.rglob("*.partial")), [])
 
+    def test_redirect_to_a_foreign_host_drops_the_api_key(self):
+        calls = []
+
+        def open_request(url, headers, proxy):
+            calls.append((url, dict(headers)))
+            if "civitai.red" in url:
+                return HttpResult(302, {"location": "https://cdn.example/weights.safetensors"}, b"")
+            return HttpResult(200, {"content-type": "application/octet-stream"}, b"weights")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = ensure_prompt_loras(
+                TAG,
+                lora_dirs=[root],
+                manifest=MANIFEST,
+                api_key="secret",
+                domain="civitai.red",
+                proxy="",
+                fetch_missing=True,
+                open_request=open_request,
+            )
+            dest = root / "UWModularWildcards" / f"{ALIAS}.safetensors"
+            self.assertEqual(dest.read_bytes(), b"weights")
+            self.assertIn(f"<lora:UWModularWildcards/{ALIAS}:0.6>", text)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1]["Authorization"], "Bearer secret")
+        self.assertNotIn("Authorization", calls[1][1])
+        self.assertEqual(calls[1][1]["User-Agent"], "sd-forge-uw-wildcards")
+        self.assertTrue(calls[1][0].startswith("https://cdn.example/"))
+
+    def test_http_redirect_is_rejected_without_a_second_request(self):
+        calls = []
+
+        def open_request(url, headers, proxy):
+            calls.append((url, dict(headers)))
+            return HttpResult(302, {"location": "http://cdn.example/weights.safetensors"}, b"")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(LoraFetchError) as caught:
+                ensure_prompt_loras(
+                    TAG,
+                    lora_dirs=[root],
+                    manifest=MANIFEST,
+                    api_key="secret",
+                    domain="civitai.red",
+                    proxy="",
+                    fetch_missing=True,
+                    open_request=open_request,
+                )
+            self.assertIn("https", str(caught.exception))
+            self.assertEqual(list(root.rglob("*.partial")), [])
+            self.assertEqual(list(root.rglob("*.safetensors")), [])
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["Authorization"], "Bearer secret")
+
+    def test_a_network_error_is_a_lora_fetch_error_and_leaves_no_partial(self):
+        def open_request(url, headers, proxy):
+            raise urllib.error.URLError("offline")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(LoraFetchError) as caught:
+                ensure_prompt_loras(
+                    TAG,
+                    lora_dirs=[root],
+                    manifest=MANIFEST,
+                    api_key="secret",
+                    domain="civitai.red",
+                    proxy="",
+                    fetch_missing=True,
+                    open_request=open_request,
+                )
+            self.assertIn("conectar", str(caught.exception))
+            self.assertEqual(list(root.rglob("*.partial")), [])
+
+    def test_a_streamed_body_is_moved_into_place_without_using_the_buffer(self):
+        def open_request(url, headers, proxy, dest=None):
+            dest.write_bytes(b"weights")
+            return HttpResult(200, {"content-type": "application/octet-stream"}, b"", stored=True)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ensure_prompt_loras(
+                TAG,
+                lora_dirs=[root],
+                manifest=MANIFEST,
+                api_key="secret",
+                domain="civitai.red",
+                proxy="",
+                fetch_missing=True,
+                open_request=open_request,
+            )
+            dest = root / "UWModularWildcards" / f"{ALIAS}.safetensors"
+            self.assertEqual(dest.read_bytes(), b"weights")
+
     def test_fetch_disabled_leaves_a_missing_tag_unchanged(self):
         def open_request(url, headers, proxy):
             raise AssertionError("no debía descargar")
@@ -160,6 +262,33 @@ class EnsureLorasTests(unittest.TestCase):
             open_request=open_request,
         )
         self.assertEqual(text, TAG)
+
+
+class StreamTests(unittest.TestCase):
+    def test_short_body_is_an_incomplete_read(self):
+        class Reader:
+            def __init__(self):
+                self.parts = [b"ab"]
+
+            def read(self, _size):
+                if not self.parts:
+                    return b""
+                return self.parts.pop(0)
+
+        with TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "weights.partial"
+            with self.assertRaises(http.client.IncompleteRead):
+                _stream_to(Reader(), dest, time.monotonic() + 5, b"a", 4)
+
+    def test_past_deadline_stops_the_copy(self):
+        class Reader:
+            def read(self, _size):
+                return b"more"
+
+        with TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "weights.partial"
+            with self.assertRaises(TimeoutError):
+                _stream_to(Reader(), dest, time.monotonic() - 1, b"a", None)
 
 
 class ShippedManifestTests(unittest.TestCase):

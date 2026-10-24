@@ -166,7 +166,7 @@ el WebUI.
 Slice A:
 
 - Con el acordeón apagado, prompt, ancho y alto salen iguales.
-- Con el acordeón encendido y aspecto activo, un prompt que termina en `[3:4]` pierde el marcador y `p.width` / `p.height` coinciden con el cálculo de `aspect.py` para los megapíxeles configurados (defecto 1.0, múltiplo 16, relación por defecto `3:4`).
+- Con el acordeón encendido y aspecto activo, un prompt que termina en `[3:4]` pierde el marcador y `p.width` / `p.height` coinciden con el cálculo de `aspect.py` para los megapíxeles configurados (defecto 1.0, múltiplo 16, relación por defecto `3:4`). En img2img, si no hay marcador, ancho y alto no cambian.
 - Settings muestra una clave propia, tipo password. Si `custom_api_key` tiene valor, las peticiones usan esa y no la propia.
 - La primera generación cuyo prompt contiene un alias del manifiesto sin fichero lo descarga a `{lora_dir}/UWModularWildcards/…` y reescribe el tag. La segunda no vuelve a pedir el fichero.
 - Sin clave, o si Civitai devuelve login / página, la generación no sigue. El mensaje nombra el alias. Si el browser está en SFW only (`civitai.com`), el mensaje lo dice.
