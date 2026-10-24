@@ -152,6 +152,39 @@ def _slot_id(key: str) -> str:
     return normalized
 
 
+_INNERMOST_MARKER_RE = re.compile(
+    r"@@WC_START:(\w+)@@((?:(?!@@WC_START:).)*?)@@WC_END:\1@@", re.DOTALL
+)
+
+
+def _marker_start(kind: str) -> str:
+    return f"@@WC_START:{kind}@@"
+
+
+def _marker_end(kind: str) -> str:
+    return f"@@WC_END:{kind}@@"
+
+
+def _unwrap_markers(text: str) -> str:
+    previous = None
+    while previous != text:
+        previous = text
+        text = _INNERMOST_MARKER_RE.sub(r"\2", text)
+    return text
+
+
+def _collect_markers(text: str, into: dict[str, str]) -> None:
+    current = text
+    previous = None
+    while previous != current:
+        previous = current
+        for kind, inner in _INNERMOST_MARKER_RE.findall(current):
+            body = inner.strip()
+            if body:
+                into[kind] = body
+        current = _INNERMOST_MARKER_RE.sub(r"\2", current)
+
+
 def _clean_expand_artifacts(text: str) -> str:
     if text is None:
         return ""
@@ -221,14 +254,26 @@ def _resolve_braces(text: str, seed: int | None) -> tuple[str, bool]:
     return current, replaced_any
 
 
-def _pick(options: list, key: str, seed: int | None, counters: dict | None) -> str:
+def _pick(
+    options: list,
+    key: str,
+    seed: int | None,
+    counters: dict | None,
+    trace: dict | None = None,
+) -> str:
     parsed = [_parse_weighted(str(item)) for item in options]
     if len(parsed) == 1:
-        return parsed[0][1]
-    slot = _slot_id(key)
-    counter = int((counters or {}).get(slot, 0))
-    rng = random.Random(_draw(seed, slot, counter))
-    return _weighted_choice(parsed, rng)
+        chosen = parsed[0][1]
+    else:
+        slot = _slot_id(key)
+        counter = int((counters or {}).get(slot, 0))
+        rng = random.Random(_draw(seed, slot, counter))
+        chosen = _weighted_choice(parsed, rng)
+    if trace is not None and chosen:
+        slot = _slot_id(key)
+        if slot in OVERRIDE_KIND_ORDER:
+            return f"{_marker_start(slot)}{chosen}{_marker_end(slot)}"
+    return chosen
 
 
 def expand_with_overrides(
@@ -237,9 +282,25 @@ def expand_with_overrides(
     *,
     catalog: dict,
     counters: dict | None = None,
+    trace: dict | None = None,
     **overrides: str,
 ) -> str:
     source = "" if text is None else str(text)
+    if trace is None:
+        return _clean_expand_artifacts(_expand(source, seed, catalog, counters, None, overrides))
+    marked = _expand(source, seed, catalog, counters, trace, overrides)
+    _collect_markers(marked, trace)
+    return _clean_expand_artifacts(_unwrap_markers(marked))
+
+
+def _expand(
+    source: str,
+    seed: int | None,
+    catalog: dict,
+    counters: dict | None,
+    trace: dict | None,
+    overrides: dict[str, str],
+) -> str:
     active, skipped = _classify_overrides(overrides)
     if not active and not skipped and "__" not in source and "{" not in source:
         return source
@@ -256,11 +317,11 @@ def expand_with_overrides(
             if options is None:
                 pieces.append(match.group(0))
             else:
-                pieces.append(_pick(options, match.group(1), seed, counters))
+                pieces.append(_pick(options, match.group(1), seed, counters, trace))
                 replaced = True
             pos = match.end()
         pieces.append(current[pos:])
         current = "".join(pieces)
         if not braces_replaced and not replaced:
             break
-    return _clean_expand_artifacts(current)
+    return current

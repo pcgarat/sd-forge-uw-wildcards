@@ -9,12 +9,21 @@ from modules.ui_components import InputAccordion
 
 from forge_uw_wildcards.api_key import resolve_civitai_api_key
 from forge_uw_wildcards.catalog import list_selectable_tags, load_catalog, wildcard_root
+from forge_uw_wildcards.inspector import collect_slots, seed_choice, status_line
 from forge_uw_wildcards.lora_fetch import ensure_prompt_loras, load_manifest, lora_directories, urllib_open
 from forge_uw_wildcards.render import render_prompts
-from forge_uw_wildcards.state import SLOT_LABELS, pin, regenerate, set_tag, skip
+from forge_uw_wildcards.state import SLOT_LABELS, parse_state, pin, regenerate, set_tag, skip
 
 EXT_DIR = Path(scripts.basedir())
 _MANIFEST = load_manifest(EXT_DIR / "forge_uw_wildcards" / "manifest.json")
+
+def _seed_read_js(elem_id):
+    """Lee el campo Seed del tab al pulsar; el espejo oculto lo transporta al backend."""
+    selector = f"#{elem_id} input, #{elem_id} textarea"
+    return (
+        "(enable, raw, probe) => [enable, raw, "
+        f"(gradioApp().querySelector('{selector}') || {{}}).value ?? '']"
+    )
 
 
 def _reload_lora_networks():
@@ -29,6 +38,11 @@ def _reload_lora_networks():
 
 class UWWildcards(scripts.Script):
     sorting_priority = 20
+
+    def __init__(self):
+        self.last_seed = None
+        self.last_total = 1
+        self._per_image: list[str] = []
 
     def title(self):
         return "UW Wildcards"
@@ -52,6 +66,18 @@ class UWWildcards(scripts.Script):
                 elem_id=self.elem_id("state"),
                 label="UW cláusulas",
             )
+            seed_probe = gr.Textbox(
+                value="",
+                visible=False,
+                elem_id=self.elem_id("seed_probe"),
+                label="UW semilla del tab",
+            )
+
+            with gr.Row():
+                preview = gr.Button("Ver lo generado", elem_id=self.elem_id("preview"))
+                clear = gr.Button("Vaciar", elem_id=self.elem_id("clear"))
+            status = gr.Markdown("", elem_id=self.elem_id("preview_status"))
+
             tag = gr.Dropdown(
                 label="Router o plantilla",
                 choices=list_selectable_tags(self._wildcard_root()),
@@ -63,8 +89,10 @@ class UWWildcards(scripts.Script):
                 outputs=[tag],
             )
             tag.change(set_tag, inputs=[clause_state, tag], outputs=[clause_state])
+            boxes = []
             for kind, label in SLOT_LABELS:
                 box = gr.Textbox(label=label, lines=2, elem_id=self.elem_id(kind))
+                boxes.append(box)
                 with gr.Row():
                     pin_button = gr.Button("Fijar")
                     skip_button = gr.Button("Omitir")
@@ -77,6 +105,31 @@ class UWWildcards(scripts.Script):
                     inputs=[clause_state, kind_state],
                     outputs=[clause_state, box],
                 )
+
+            def on_preview(enabled, raw, mirror):
+                if not enabled:
+                    return [gr.skip()] * len(boxes) + [""]
+                choice = seed_choice(mirror, self.last_seed)
+                if choice is None:
+                    return [gr.skip()] * len(boxes) + [status_line(None)]
+                slots = collect_slots(
+                    load_catalog(self._wildcard_root()), parse_state(raw), choice.seed
+                )
+                values = [slots.get(kind, "") for kind, _label in SLOT_LABELS]
+                return values + [status_line(choice, self.last_total)]
+
+            preview.click(
+                on_preview,
+                inputs=[enable, clause_state, seed_probe],
+                outputs=[*boxes, status],
+                _js=_seed_read_js(f"{self.tabname}_seed"),
+                show_progress=False,
+            )
+            clear.click(
+                lambda: [""] * len(boxes) + [""],
+                outputs=[*boxes, status],
+            )
+
             apply_aspect = gr.Checkbox(
                 True, label="Aplicar marcador de aspecto", elem_id=self.elem_id("aspect")
             )
@@ -96,7 +149,7 @@ class UWWildcards(scripts.Script):
         self.paste_field_names = ["UW Wildcards"]
         return [enable, apply_aspect, megapixels, default_ar, divisible, fetch, clause_state]
 
-    def before_process(
+    def process(
         self,
         processing,
         enable,
@@ -108,13 +161,10 @@ class UWWildcards(scripts.Script):
         clause_state,
     ):
         if not enable:
+            self._per_image = []
             return
-        had_batch = getattr(processing, "all_prompts", None) is not None
-        prompts = list(processing.all_prompts) if had_batch else [processing.prompt or ""]
-        seeds = list(getattr(processing, "all_seeds", None) or [])
-        if len(seeds) < len(prompts):
-            base = int(getattr(processing, "seed", 0) or 0)
-            seeds = seeds + [base] * (len(prompts) - len(seeds))
+        prompts = list(processing.all_prompts)
+        seeds = [int(seed) for seed in processing.all_seeds]
         rewritten, size = render_prompts(
             prompts,
             clause_state or "{}",
@@ -147,9 +197,12 @@ class UWWildcards(scripts.Script):
             )
 
         rewritten = [rewrite(item) for item in rewritten]
+        processing.all_prompts = rewritten
         processing.prompt = rewritten[0] if rewritten else ""
-        if had_batch:
-            processing.all_prompts = rewritten
+        if getattr(processing, "main_prompt", None) is not None:
+            processing.main_prompt = processing.prompt
+        self._inherit_hires_prompts(processing, prompts, rewritten)
+        self._per_image = list(rewritten)
         if getattr(processing, "negative_prompt", None):
             processing.negative_prompt = rewrite(processing.negative_prompt)
         if getattr(processing, "all_negative_prompts", None):
@@ -161,7 +214,37 @@ class UWWildcards(scripts.Script):
         if not isinstance(extra, dict):
             processing.extra_generation_params = {}
         processing.extra_generation_params["UW Wildcards"] = clause_state or "{}"
+        self.last_seed = seeds[0] if seeds else None
+        self.last_total = len(rewritten) or 1
         _reload_lora_networks()
+
+    def before_process_batch(self, p, *args, **kwargs):
+        """Dynamic Prompts, que corre después, rehace all_prompts desde el primero.
+
+        Si no cambió el texto, se recupera la variación por semilla; si lo cambió,
+        manda su versión y no se pisa.
+        """
+        per_image = self._per_image
+        if not per_image or len(per_image) != len(p.all_prompts):
+            return
+        if not p.all_prompts or p.all_prompts[0] != per_image[0]:
+            return
+        p.all_prompts = list(per_image)
+        if len(p.prompts) == len(per_image):
+            p.prompts = list(per_image)
+
+    @staticmethod
+    def _inherit_hires_prompts(processing, originals, rewritten):
+        """setup_prompts copió el prompt sin expandir al de hires; solo se hereda el propio."""
+        hires = getattr(processing, "all_hr_prompts", None)
+        if not isinstance(hires, list) or len(hires) != len(originals):
+            return
+        processing.all_hr_prompts = [
+            new if old == original else old
+            for old, original, new in zip(hires, originals, rewritten)
+        ]
+        if getattr(processing, "hr_prompt", None) in originals:
+            processing.hr_prompt = processing.all_hr_prompts[0]
 
 
 def on_ui_settings():
